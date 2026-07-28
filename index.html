@@ -84,6 +84,7 @@ main{flex:1;display:grid;grid-template-columns:1fr 370px;gap:13px;padding:13px;a
 .legend{display:flex;gap:10px;font-family:var(--mono);font-size:9px;color:var(--dim)}
 .legend i{display:inline-block;width:12px;height:0;border-top:2px solid;vertical-align:middle;margin-right:4px}
 .srcbadge{font-family:var(--mono);font-size:9px;letter-spacing:.12em;padding:3px 7px;border-radius:3px;border:1px solid var(--line2);color:var(--cyn)}
+#verifTime{color:var(--grn);border-color:rgba(47,214,164,.35)}
 
 #chartwrap{position:relative;height:var(--chart-h);transition:height .2s}
 #cv{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair;display:block;touch-action:none}
@@ -279,7 +280,10 @@ footer{padding:9px 16px;padding-bottom:calc(9px + env(safe-area-inset-bottom));b
 
     <aside>
       <section class="panel">
-        <div class="phead"><h2>감지된 지지 / 저항</h2></div>
+        <div class="phead">
+          <h2>감지된 지지 / 저항</h2>
+          <span class="srcbadge" id="verifTime">검증 --:--:--</span>
+        </div>
         <div id="levels"><div class="empty">데이터 수집 후 레벨 표시</div></div>
       </section>
       <section class="panel">
@@ -289,11 +293,9 @@ footer{padding:9px 16px;padding-bottom:calc(9px + env(safe-area-inset-bottom));b
           <div class="ctrl-row"><label>STRENGTH ≥ <output id="oS">0.80</output></label><input type="range" id="thS" min="0" max="1" step="0.01" value="0.80"></div>
           <div class="ctrl-row"><label>SCORE ≥ <output id="oC">0.80</output></label><input type="range" id="thC" min="0" max="1" step="0.01" value="0.80"></div>
           <div class="ctrl-row"><label>COOLDOWN <output id="oCd">120분</output></label><input type="range" id="thCd" min="10" max="240" step="5" value="120"></div>
-          <div class="ctrl-row"><label>돌파구역 억제 <output id="oBz">96봉</output></label><input type="range" id="thBz" min="0" max="240" step="12" value="96"></div>
           <div class="ctrl-row"><label>차트 높이 <output id="oH">62vh</output></label><input type="range" id="thH" min="30" max="88" step="1" value="62"></div>
           <label class="tgl"><input type="checkbox" id="ghost" checked> 임계 미달 레벨 고스트 표시</label>
           <label class="tgl"><input type="checkbox" id="vpTgl" checked> 거래량 프로필(VP) 오버레이</label>
-          <label class="tgl"><input type="checkbox" id="autoDel" checked> 무의미 레벨 자동 삭제 (완전 제거)</label>
         </div>
       </section>
       <section class="panel">
@@ -305,7 +307,7 @@ footer{padding:9px 16px;padding-bottom:calc(9px + env(safe-area-inset-bottom));b
 
   <footer>
     <span>본 알림은 자동 생성된 정보이며 투자 조언이 아닙니다 · Not trading advice.</span>
-    <span>DATA: BINANCE PUBLIC API · ENGINE: HEURISTIC v5</span>
+    <span>DATA: BINANCE PUBLIC API · ENGINE: HEURISTIC v6</span>
   </footer>
 </div>
 <div id="toasts"></div>
@@ -317,8 +319,8 @@ const CFG={
   window:36,maxOffsetAtr:5.0,atrLen:14,
   existsThreshold:0.50,strengthThreshold:0.80,scoreThreshold:0.80,
   cooldownMinutes:120,priceToleranceAtr:0.25,
-  brokenSuppressBars:96,
-  ghost:true,vp:true,autoDelete:true
+  matchTolAtr:0.6,
+  ghost:true,vp:true
 };
 const HOSTS=["https://api.binance.com","https://data-api.binance.vision","https://api1.binance.com","https://api2.binance.com"];
 let hostIdx=0,serverOff=0;
@@ -329,10 +331,7 @@ const clip=clamp;
 
 let rows=[];
 let curLevels=[];
-const bornMap=new Map();
-const scoreHist=new Map();
-const levelLife=new Map();
-const brokenZones=[];   // 파괴된 가격대 → 재감지 차단 (지지↔저항 뒤집힘 방지)
+const scoreHist=new Map();   // key -> [scores] (sparkline only)
 let lastCompletedT=0,prevPx=null,failCount=0;
 let hoverKey=null;
 
@@ -344,13 +343,6 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",
 function niceStep(x){const p=Math.pow(10,Math.floor(Math.log10(x)));const f=x/p;return(f<1.5?1:f<3?2:f<7?5:10)*p;}
 const passes=lv=>lv.exists>=CFG.existsThreshold&&lv.strength>=CFG.strengthThreshold&&lv.score>=CFG.scoreThreshold;
 const sigmoid=z=>1/(1+Math.exp(-z));
-function trendSlope(arr){
-  const n=arr.length;if(n<2)return 0;
-  const xm=(n-1)/2;let ym=0;for(const y of arr)ym+=y;ym/=n;
-  let num=0,den=0;
-  for(let i=0;i<n;i++){num+=(i-xm)*(arr[i]-ym);den+=(i-xm)*(i-xm);}
-  return den?num/den:0;
-}
 function log(msg,lvl="INFO"){
   const el=document.createElement("div");el.className="logline";
   el.innerHTML=`<span class="lt">${utcHMS(Date.now())}</span><span class="lb lb-${lvl.toLowerCase()}">[${lvl}]</span><span class="lm">${esc(msg)}</span>`;
@@ -404,8 +396,8 @@ function computeFeatures(){
   }
 }
 
-/* ================= S/R Engine v5 ================= */
-const DET={lookback:240,touchTol:0.30,closeAway:0.12,clusterTol:0.30,reactBars:10,vpBins:64,vpDecay:160,eqTol:0.15,htfGroup:12,htfLookback:288,brokenSuppressTol:0.5};
+/* ================= S/R Engine ================= */
+const DET={lookback:240,touchTol:0.30,closeAway:0.12,clusterTol:0.30,reactBars:10,vpBins:64,vpDecay:160,eqTol:0.15,htfGroup:12,htfLookback:288};
 
 function gaussSmooth(a,sig){
   const r=Math.ceil(sig*3),k=[];
@@ -641,73 +633,68 @@ function detectLevels(){
     out.push(scoreLevel(cl,close,atr,n,trend,volRegime,candSets,htf,baseline));
   }
   out.sort((a,b)=>b.score-a.score);
-  /* 돌파 구역 억제: 최근 파괴된 가격대는 재감지 차단 (지지↔저항 뒤집힘 방지) */
-  const cutoff=n-1-CFG.brokenSuppressBars;
-  for(let i=brokenZones.length-1;i>=0;i--){if(brokenZones[i].bar<=cutoff)brokenZones.splice(i,1);}
-  if(CFG.brokenSuppressBars>0&&brokenZones.length){
-    return out.filter(lv=>!brokenZones.some(z=>Math.abs(lv.level-z.price)<=atr*DET.brokenSuppressTol));
-  }
   return out;
 }
 
-/* ================= Auto-delete (complete removal) ================= */
-function purgeLevel(key,reason,lv,n,atr){
-  if(reason==="파괴"){
-    brokenZones.push({price:lv.level,bar:n-1});
-    log(`Level 파괴 → 삭제: ${lv.type} ${fmtP(lv.level)} · ${CFG.brokenSuppressBars}봉간 재감지 차단`,"DEL");
-  }else{
-    log(`Level ${reason} → 삭제: ${lv.type} ${fmtP(lv.level)} (score ${lv.score.toFixed(2)})`,"DEL");
-  }
-  levelLife.delete(key);scoreHist.delete(key);bornMap.delete(key);
-}
-function autoDeleteFilter(fresh){
-  if(!CFG.autoDelete)return fresh;
-  const n=rows.length;if(!n)return fresh;
-  const close=rows[n-1].c,atr=rows[n-1].atr;
-  const kept=[],removed=[];
-  for(const lv of fresh){
-    const life=levelLife.get(lv.key)||{lowCount:0};
-    const broken=(lv.type==="support"&&close<lv.level-0.7*atr)||(lv.type==="resistance"&&close>lv.level+0.7*atr);
-    const hist=scoreHist.get(lv.key)||[];
-    const slope=trendSlope(hist);
-    const trendDead=hist.length>=8&&slope<-0.02&&lv.score<0.45;
-    let dead=false,reason="";
-    if(broken){dead=true;reason="파괴";}
-    else if(lv.score<0.18){life.lowCount++;if(life.lowCount>=4){dead=true;reason="소멸";}}
-    else life.lowCount=0;
-    if(trendDead){dead=true;reason="약화";}
-    if(dead){removed.push(lv.key);purgeLevel(lv.key,reason,lv,n,atr);}
-    else{levelLife.set(lv.key,life);kept.push(lv);}
-  }
-  const keptKeys=new Set(kept.map(l=>l.key));
-  for(const prev of curLevels){
-    if(!keptKeys.has(prev.key)&&!removed.includes(prev.key))purgeLevel(prev.key,"미감지",prev,n,atr);
-  }
-  for(const key of[...levelLife.keys()])if(!keptKeys.has(key))levelLife.delete(key);
-  for(const key of[...scoreHist.keys()])if(!keptKeys.has(key))scoreHist.delete(key);
-  for(const key of[...bornMap.keys()])if(!keptKeys.has(key))bornMap.delete(key);
-  return kept;
-}
-
-function refreshLevels(){
-  const n=rows.length,atr=n?rows[n-1].atr:0;
-  if(n>DET.lookback)CH.vp=computeVolumeProfile(Math.max(0,n-DET.lookback),n-1,DET.vpBins,DET.vpDecay);
-  let fresh=detectLevels();
+/* ================= 지속 검증: 매칭 → 가격 보정 / 미감지 → 삭제 ================= */
+function reconcileLevels(fresh){
   const now=performance.now();
+  const atr=rows.length?rows[rows.length-1].atr:1;
+  const tol=Math.max(atr*CFG.matchTolAtr,1);
+  const prevList=[...curLevels];
+  const used=new Set();
   for(const lv of fresh){
-    lv.key=lv.type+"_"+Math.round(lv.level/Math.max(atr*CFG.priceToleranceAtr,1.0));
-    lv.born=bornMap.has(lv.key)?bornMap.get(lv.key):now;
+    /* 기존 선 중 같은 타입·가장 가까운 선과 매칭 (신원 유지 → 가격 보정) */
+    let best=null,bd=1e18;
+    for(const p of prevList){
+      if(used.has(p)||p.type!==lv.type)continue;
+      const d=Math.abs(p.level-lv.level);
+      if(d<=tol&&d<bd){bd=d;best=p;}
+    }
+    if(best){
+      used.add(best);
+      lv.born=best.born;
+      lv._disp=best._disp;          /* 표시 가격 이어받아 부드럽게 보정 */
+      lv.life=(best.life||0)+1;
+      if(best.key!==lv.key&&scoreHist.has(best.key)){
+        scoreHist.set(lv.key,scoreHist.get(best.key));
+        scoreHist.delete(best.key);
+      }
+    }else{
+      lv.born=now;
+      lv._disp=lv.level;
+      lv.life=1;
+    }
     const h=scoreHist.get(lv.key)||[];
     h.push(lv.score);if(h.length>14)h.shift();
     scoreHist.set(lv.key,h);
   }
-  const seen=new Set();
-  fresh=fresh.filter(l=>{if(seen.has(l.key))return false;seen.add(l.key);return true;});
-  fresh=autoDeleteFilter(fresh);
-  bornMap.clear();fresh.forEach(lv=>bornMap.set(lv.key,lv.born));
+  /* 미감지 → 즉시 삭제 */
+  for(const p of prevList){
+    if(!used.has(p)&&(p.life||0)>=2){
+      log(`Level 삭제(미감지): ${p.type} ${fmtP(p.level)}`,"DEL");
+    }
+  }
+  const freshKeys=new Set(fresh.map(l=>l.key));
+  for(const key of[...scoreHist.keys()])if(!freshKeys.has(key))scoreHist.delete(key);
   curLevels=fresh;
+  $("#verifTime").textContent="검증 "+utcHMS(Date.now());
 }
 
+function refreshLevels(){
+  const n=rows.length;
+  if(!n)return;
+  const atr=rows[n-1].atr||1;
+  if(n>DET.lookback)CH.vp=computeVolumeProfile(Math.max(0,n-DET.lookback),n-1,DET.vpBins,DET.vpDecay);
+  let fresh=detectLevels();
+  const bucket=Math.max(atr*CFG.priceToleranceAtr,1.0);
+  for(const lv of fresh)lv.key=lv.type+"_"+Math.round(lv.level/bucket);
+  const seen=new Set();
+  fresh=fresh.filter(l=>{if(seen.has(l.key))return false;seen.add(l.key);return true;});
+  reconcileLevels(fresh);
+}
+
+/* ================= AlertManager ================= */
 const am={
   state:(()=>{try{return JSON.parse(localStorage.getItem("sr_alert_state_v1")||"{}")}catch(e){return{}}})(),
   key:(t,p,atr)=>t+"_"+Math.round(p/Math.max(atr*CFG.priceToleranceAtr,1.0)),
@@ -748,6 +735,7 @@ function toast(subject,body,cls="info"){
   setTimeout(()=>{t.classList.add("out");setTimeout(()=>t.remove(),320);},14000);
 }
 
+/* ================= Chart ================= */
 const CH={cv:$("#cv"),ctx:null,w:0,h:0,dpr:1,view:{count:140,end:0},follow:true,yC:null,mouse:null,drag:null,pinch:null,vp:null};
 CH.ctx=CH.cv.getContext("2d");
 function resize(){
@@ -834,9 +822,12 @@ function render(ts){
     }
   }
 
+  /* S/R lines — 표시 가격은 목표가로 부드럽게 보정 */
   const now=performance.now();
   for(const lv of curLevels){
-    const y=yOf(lv.level);lv._sy=y;
+    if(lv._disp==null)lv._disp=lv.level;
+    lv._disp+=(lv.level-lv._disp)*0.15;
+    const y=yOf(lv._disp);lv._sy=y;
     if(y<M.t-2||y>M.t+priceH+2)continue;
     const pass=passes(lv),hov=lv.key===hoverKey;
     const p=1-Math.pow(1-clamp((now-lv.born)/700,0,1),3);
@@ -849,7 +840,7 @@ function render(ts){
     ctx.globalAlpha=alpha*p;ctx.strokeStyle=col;ctx.lineWidth=hov?2:(pass?1.4:1);
     ctx.setLineDash(pass?[]:[6,5]);
     ctx.beginPath();ctx.moveTo(M.l,y);ctx.lineTo(M.l+pw*p,y);ctx.stroke();ctx.setLineDash([]);
-    const txt=(lv.type==="support"?"S ":"R ")+fmtP(lv.level);
+    const txt=(lv.type==="support"?"S ":"R ")+fmtP(lv._disp);
     const cw=M.r-12,cx=M.l+pw+4,cy=clamp(y-8,M.t,M.t+priceH-16);
     ctx.globalAlpha=p;ctx.fillStyle=pass?col:"#0a101f";ctx.strokeStyle=col;ctx.lineWidth=1;
     ctx.beginPath();ctx.rect(cx,cy,cw,16);pass?ctx.fill():ctx.stroke();
@@ -901,6 +892,7 @@ function render(ts){
   }
 }
 
+/* ================= Chart interactions ================= */
 const pointers=new Map();
 CH.cv.addEventListener("pointerdown",e=>{
   CH.cv.setPointerCapture(e.pointerId);
@@ -976,6 +968,7 @@ $("#exitFsBtn").onclick=exitFs;
   grip.addEventListener("pointerup",gEnd);grip.addEventListener("pointercancel",gEnd);
 })();
 
+/* ================= Levels panel ================= */
 function sparkSVG(hist){
   if(hist.length<2)return"";
   const w=56,h=14;
@@ -1008,7 +1001,7 @@ function renderLevels(){
       <div class="lv-type">${lv.type==="support"?"SUP":"RES"}</div>
       <div><div class="lv-price">${fmtP(lv.level)}</div><div class="lv-sub">${meta}</div>${detail}</div>
       <div>${meter("E",lv.exists)}${meter("S",lv.strength)}${meter("SC",lv.score)}${spark}</div>
-      <div class="lv-status"><span>${status}</span><span class="srcchip">HEUR v5</span></div>
+      <div class="lv-status"><span>${status}</span><span class="srcchip">HEUR v6</span></div>
     </div>`;
   }).join("");
   wrap.querySelectorAll(".lv").forEach(el=>{
@@ -1018,6 +1011,7 @@ function renderLevels(){
 }
 function syncRowHover(){document.querySelectorAll(".lv").forEach(el=>{el.style.background=el.dataset.key===hoverKey?"#16264a":"";});}
 
+/* ================= Stats ================= */
 function updateStats(){
   const n=rows.length;if(!n)return;
   const last=rows[n-1];
@@ -1036,6 +1030,7 @@ function updateStats(){
 }
 setInterval(()=>{$("#clock").textContent=utcHMS(Date.now())+" UTC";updateStats();},1000);
 
+/* ================= Polling ================= */
 function mergeRows(fresh){
   for(const r of fresh){
     const last=rows[rows.length-1];
@@ -1060,12 +1055,12 @@ async function poll(){
 }
 $("#retryBtn").onclick=()=>{failCount=0;$("#offline").classList.add("hidden");poll();};
 
+/* ================= Controls ================= */
 const bind=(id,out,key,fmt)=>{$(id).addEventListener("input",e=>{CFG[key]=+e.target.value;$(out).textContent=fmt(+e.target.value);renderLevels();});};
 bind("#thE","#oE","existsThreshold",v=>v.toFixed(2));
 bind("#thS","#oS","strengthThreshold",v=>v.toFixed(2));
 bind("#thC","#oC","scoreThreshold",v=>v.toFixed(2));
 bind("#thCd","#oCd","cooldownMinutes",v=>v+"분");
-bind("#thBz","#oBz","brokenSuppressBars",v=>v+"봉");
 $("#thH").addEventListener("input",e=>{
   const v=+e.target.value;
   document.documentElement.style.setProperty("--chart-h",v+"vh");
@@ -1074,8 +1069,8 @@ $("#thH").addEventListener("input",e=>{
 });
 $("#ghost").addEventListener("change",e=>CFG.ghost=e.target.checked);
 $("#vpTgl").addEventListener("change",e=>CFG.vp=e.target.checked);
-$("#autoDel").addEventListener("change",e=>CFG.autoDelete=e.target.checked);
 
+/* ================= Init ================= */
 (async function init(){
   resize();requestAnimationFrame(render);
   if(window.innerWidth<=1080){
@@ -1091,9 +1086,9 @@ $("#autoDel").addEventListener("change",e=>CFG.autoDelete=e.target.checked);
     lastCompletedT=rows.filter(r=>r.ct<=nowS()).slice(-1)[0]?.t||0;
     refreshLevels();updateStats();renderLevels();
     $("#loading").classList.add("hidden");setStatus("LIVE","");
-    log(`Candles loaded: ${rows.length} · Engine v5 ready (역전환 제거·돌파구역 억제)`);
+    log(`Candles loaded: ${rows.length} · Engine v6 ready (지속 검증·미감지 즉시 삭제)`);
     toast(`[${CFG.symbol} ${CFG.interval}] Direct S/R Alert Started`,
-      `Bitcoin Direct S/R Alert has started.\n\nSymbol: ${CFG.symbol}\nInterval: ${CFG.interval}\nEngine: Heuristic v5\nExists threshold: ${CFG.existsThreshold.toFixed(2)}\nStrength threshold: ${CFG.strengthThreshold.toFixed(2)}\nScore threshold: ${CFG.scoreThreshold.toFixed(2)}\nCooldown: ${CFG.cooldownMinutes} min\nBroken-zone suppression: ${CFG.brokenSuppressBars} bars\nAuto-delete: ON\n\nYou will receive an alert when a S/R level is detected.`,"info");
+      `Bitcoin Direct S/R Alert has started.\n\nSymbol: ${CFG.symbol}\nInterval: ${CFG.interval}\nEngine: Heuristic v6\nExists threshold: ${CFG.existsThreshold.toFixed(2)}\nStrength threshold: ${CFG.strengthThreshold.toFixed(2)}\nScore threshold: ${CFG.scoreThreshold.toFixed(2)}\nCooldown: ${CFG.cooldownMinutes} min\nLevel lifecycle: re-verify every update, delete if not detected\n\nYou will receive an alert when a S/R level is detected.`,"info");
     setInterval(()=>{if(!document.hidden)poll();},4000);
     setInterval(syncTime,300000);
   }catch(e){
