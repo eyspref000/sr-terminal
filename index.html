@@ -13,7 +13,7 @@
 :root{
   --bg:#060a13;--panel:#0c1322;--panel2:#101a2e;--line:#1b2740;--line2:#2a3a5e;
   --txt:#e9eef9;--mut:#8fa0c2;--dim:#5a6a8f;
-  --grn:#2fd6a4;--red:#ff5d6c;--amb:#ffb648;--cyn:#49c1ff;--vio:#b48cff;
+  --grn:#2fd6a4;--red:#ff5d6c;--amb:#ffb648;--cyn:#49c1ff;
   --mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
   --disp:'Space Grotesk','Noto Sans KR',sans-serif;
   --body:'Noto Sans KR',system-ui,sans-serif;
@@ -148,7 +148,6 @@ aside{display:flex;flex-direction:column;gap:13px}
 .bdg-x{color:#ff5d6c;background:rgba(255,93,108,.14)}
 .bdg-h{color:#b48cff;background:rgba(180,140,255,.14)}
 .bdg-s{color:#7ee0ff;background:rgba(126,224,255,.14)}
-.bdg-r{color:#ffd166;background:rgba(255,209,102,.16)}
 .meter{display:grid;grid-template-columns:18px 1fr;gap:4px;align-items:center;font-family:var(--mono);font-size:8px;color:var(--dim);margin-bottom:3px}
 .meter .tr{height:3px;background:#182339;border-radius:2px;overflow:hidden}
 .meter .tr i{display:block;height:100%;background:var(--cyn);transition:width .4s}
@@ -290,10 +289,11 @@ footer{padding:9px 16px;padding-bottom:calc(9px + env(safe-area-inset-bottom));b
           <div class="ctrl-row"><label>STRENGTH ≥ <output id="oS">0.80</output></label><input type="range" id="thS" min="0" max="1" step="0.01" value="0.80"></div>
           <div class="ctrl-row"><label>SCORE ≥ <output id="oC">0.80</output></label><input type="range" id="thC" min="0" max="1" step="0.01" value="0.80"></div>
           <div class="ctrl-row"><label>COOLDOWN <output id="oCd">120분</output></label><input type="range" id="thCd" min="10" max="240" step="5" value="120"></div>
+          <div class="ctrl-row"><label>돌파구역 억제 <output id="oBz">96봉</output></label><input type="range" id="thBz" min="0" max="240" step="12" value="96"></div>
           <div class="ctrl-row"><label>차트 높이 <output id="oH">62vh</output></label><input type="range" id="thH" min="30" max="88" step="1" value="62"></div>
           <label class="tgl"><input type="checkbox" id="ghost" checked> 임계 미달 레벨 고스트 표시</label>
           <label class="tgl"><input type="checkbox" id="vpTgl" checked> 거래량 프로필(VP) 오버레이</label>
-          <label class="tgl"><input type="checkbox" id="autoDel" checked> 무의미 레벨 자동 삭제 + 역전환 감시</label>
+          <label class="tgl"><input type="checkbox" id="autoDel" checked> 무의미 레벨 자동 삭제 (완전 제거)</label>
         </div>
       </section>
       <section class="panel">
@@ -305,7 +305,7 @@ footer{padding:9px 16px;padding-bottom:calc(9px + env(safe-area-inset-bottom));b
 
   <footer>
     <span>본 알림은 자동 생성된 정보이며 투자 조언이 아닙니다 · Not trading advice.</span>
-    <span>DATA: BINANCE PUBLIC API · ENGINE: HEURISTIC v4</span>
+    <span>DATA: BINANCE PUBLIC API · ENGINE: HEURISTIC v5</span>
   </footer>
 </div>
 <div id="toasts"></div>
@@ -317,6 +317,7 @@ const CFG={
   window:36,maxOffsetAtr:5.0,atrLen:14,
   existsThreshold:0.50,strengthThreshold:0.80,scoreThreshold:0.80,
   cooldownMinutes:120,priceToleranceAtr:0.25,
+  brokenSuppressBars:96,
   ghost:true,vp:true,autoDelete:true
 };
 const HOSTS=["https://api.binance.com","https://data-api.binance.vision","https://api1.binance.com","https://api2.binance.com"];
@@ -331,7 +332,7 @@ let curLevels=[];
 const bornMap=new Map();
 const scoreHist=new Map();
 const levelLife=new Map();
-const brokenWatch=new Map();   // 파괴된 레벨 → 역전환 감시
+const brokenZones=[];   // 파괴된 가격대 → 재감지 차단 (지지↔저항 뒤집힘 방지)
 let lastCompletedT=0,prevPx=null,failCount=0;
 let hoverKey=null;
 
@@ -393,7 +394,6 @@ function computeFeatures(){
     for(let j=s36;j<=i;j++){hh=Math.max(hh,rows[j].h);ll=Math.min(ll,rows[j].l);}
     r.rh=hh;r.rl=ll;r.rp=(hh-ll)?(r.c-ll)/(hh-ll):0.5;
   }
-  /* atr_z (ATR regime, Python 코드 이식) */
   const an=rows.map(r=>r.c?r.atr/r.c:0);
   for(let i=0;i<n;i++){
     const s=Math.max(0,i-287),cnt=i-s+1;
@@ -404,8 +404,8 @@ function computeFeatures(){
   }
 }
 
-/* ================= S/R Engine v4 ================= */
-const DET={lookback:240,touchTol:0.30,closeAway:0.12,clusterTol:0.30,reactBars:10,vpBins:64,vpDecay:160,eqTol:0.15,htfGroup:12,htfLookback:288};
+/* ================= S/R Engine v5 ================= */
+const DET={lookback:240,touchTol:0.30,closeAway:0.12,clusterTol:0.30,reactBars:10,vpBins:64,vpDecay:160,eqTol:0.15,htfGroup:12,htfLookback:288,brokenSuppressTol:0.5};
 
 function gaussSmooth(a,sig){
   const r=Math.ceil(sig*3),k=[];
@@ -455,7 +455,6 @@ function roundLevels(close,atr){
   for(let p=Math.ceil(lo/step)*step;p<=hi;p+=step)out.push(p);
   return out;
 }
-/* 통계적 기준선: 룩백 전체의 평균 최대 이탈 (랜덤 노이즈 대비용) */
 function computeBaselineReact(n,atr){
   const start=Math.max(0,n-DET.lookback);
   let sum=0,cnt=0;
@@ -469,7 +468,6 @@ function computeBaselineReact(n,atr){
   }
   return cnt>0?Math.max(0.3,sum/cnt):1.0;
 }
-/* 상위 타임프레임(1h) 스윙 */
 function htfSwings(n){
   const start=Math.max(0,n-DET.htfLookback);
   const bars=[];
@@ -570,11 +568,10 @@ function scoreLevel(cl,close,atr,n,trend,volRegime,candSets,htf,baseline){
     }
   }
   const reaction=rejections?reactSum/rejections:0;
-  const significance=reaction/baseline;              /* 통계적 유의성 */
-  const rejQuality=rejections?rejQSum/rejections:0;  /* 흡수 품질 */
+  const significance=reaction/baseline;
+  const rejQuality=rejections?rejQSum/rejections:0;
   const heldRatio=heldTot>0?heldW/heldTot:0;
   const polarity=(ownRej>=1&&crossRej>=1&&(ownRej+crossRej)>=3)?1:0;
-  /* 소진 v2: pressure + weaken + volDecline */
   const pressure=clamp((recentTests-3)/4,0,1);
   let weaken=0;
   if(reactions.length>=3){
@@ -611,7 +608,7 @@ function scoreLevel(cl,close,atr,n,trend,volRegime,candSets,htf,baseline){
   const mag=Math.min(Math.abs(L-close)/atr,CFG.maxOffsetAtr);
   return{type,level:L,offsetAtr:(type==="support"?-1:1)*mag,exists,strength,score:exists*strength,
     touches:rejections,recency,reaction,significance,held:Math.round(heldW),heldN:tests,volPct:Math.round(volDens*100),
-    polarity,multiWin,htfAlign,confluence,trendAlign,exhaustion,roleReversal:false};
+    polarity,multiWin,htfAlign,confluence,trendAlign,exhaustion};
 }
 function detectLevels(){
   const n=rows.length;
@@ -628,7 +625,6 @@ function detectLevels(){
     pv.hi.forEach(i=>cands.push({p:rows[i].h,w,src:"piv",i}));
     pv.lo.forEach(i=>cands.push({p:rows[i].l,w,src:"piv",i}));
   });
-  /* 이퀄 레벨 (이중 천정/바닥) */
   const pv3=fractalPivots(start,n-1,3);
   const pivP=[...pv3.hi.map(i=>rows[i].h),...pv3.lo.map(i=>rows[i].l)].sort((a,b)=>a-b);
   for(let i=1;i<pivP.length;i++){
@@ -645,46 +641,24 @@ function detectLevels(){
     out.push(scoreLevel(cl,close,atr,n,trend,volRegime,candSets,htf,baseline));
   }
   out.sort((a,b)=>b.score-a.score);
-  return out;
-}
-
-/* ================= 역전환 감시 (브레이크→리테스트→홀드) ================= */
-function detectRoleReversals(n,atr,close){
-  const out=[],zone=atr*DET.touchTol,closeAway=atr*DET.closeAway;
-  for(const[key,bw]of[...brokenWatch]){
-    const age=n-1-bw.brokenBar;
-    if(age>48){brokenWatch.delete(key);continue;}
-    if(age<2)continue;
-    const L=bw.level;
-    const newType=bw.type==="support"?"resistance":"support";
-    if(newType==="resistance"&&L<close)continue;
-    if(newType==="support"&&L>close)continue;
-    let found=false;
-    for(let i=Math.max(0,n-5);i<n;i++){
-      const r=rows[i];
-      if(newType==="resistance"&&r.h>=L-zone&&r.c<=L-closeAway)found=true;
-      if(newType==="support"&&r.l<=L+zone&&r.c>=L+closeAway)found=true;
-    }
-    if(found){
-      const mag=Math.min(Math.abs(L-close)/atr,CFG.maxOffsetAtr);
-      out.push({type:newType,level:L,offsetAtr:(newType==="support"?-1:1)*mag,
-        exists:0.90,strength:0.92,score:0.828,
-        touches:1,recency:0,reaction:0.8,significance:1.3,held:1,heldN:1,volPct:0,
-        polarity:1,multiWin:0,htfAlign:0,confluence:2,trendAlign:0,exhaustion:0,roleReversal:true});
-      brokenWatch.delete(key);
-      log(`역전환 감지: ${bw.type} ${fmtP(L)} → ${newType} (리테스트 홀드)`,"ALERT");
-    }
+  /* 돌파 구역 억제: 최근 파괴된 가격대는 재감지 차단 (지지↔저항 뒤집힘 방지) */
+  const cutoff=n-1-CFG.brokenSuppressBars;
+  for(let i=brokenZones.length-1;i>=0;i--){if(brokenZones[i].bar<=cutoff)brokenZones.splice(i,1);}
+  if(CFG.brokenSuppressBars>0&&brokenZones.length){
+    return out.filter(lv=>!brokenZones.some(z=>Math.abs(lv.level-z.price)<=atr*DET.brokenSuppressTol));
   }
   return out;
 }
 
-/* ================= Auto-delete (complete removal + brokenWatch) ================= */
+/* ================= Auto-delete (complete removal) ================= */
 function purgeLevel(key,reason,lv,n,atr){
-  if(reason==="파괴"&&CFG.autoDelete){
-    brokenWatch.set(key,{level:lv.level,type:lv.type,brokenBar:n-1});
+  if(reason==="파괴"){
+    brokenZones.push({price:lv.level,bar:n-1});
+    log(`Level 파괴 → 삭제: ${lv.type} ${fmtP(lv.level)} · ${CFG.brokenSuppressBars}봉간 재감지 차단`,"DEL");
+  }else{
+    log(`Level ${reason} → 삭제: ${lv.type} ${fmtP(lv.level)} (score ${lv.score.toFixed(2)})`,"DEL");
   }
   levelLife.delete(key);scoreHist.delete(key);bornMap.delete(key);
-  log(`Level ${reason} → 삭제: ${lv.type} ${fmtP(lv.level)} (score ${lv.score.toFixed(2)})${reason==="파괴"?" · 역전환 감시 시작":""}`,"DEL");
 }
 function autoDeleteFilter(fresh){
   if(!CFG.autoDelete)return fresh;
@@ -719,8 +693,6 @@ function refreshLevels(){
   const n=rows.length,atr=n?rows[n-1].atr:0;
   if(n>DET.lookback)CH.vp=computeVolumeProfile(Math.max(0,n-DET.lookback),n-1,DET.vpBins,DET.vpDecay);
   let fresh=detectLevels();
-  const close=n?rows[n-1].c:0;
-  fresh=fresh.concat(detectRoleReversals(n,atr,close));
   const now=performance.now();
   for(const lv of fresh){
     lv.key=lv.type+"_"+Math.round(lv.level/Math.max(atr*CFG.priceToleranceAtr,1.0));
@@ -761,7 +733,7 @@ function dispatchAlerts(){
   body+=`Symbol: ${CFG.symbol}\nInterval: ${CFG.interval}\n`;
   body+=`Last completed candle: ${utcFull(lastCompletedT)}\n`;
   body+=`Close: ${close.toFixed(2)}\nATR: ${atr.toFixed(2)}\n\nDetected levels:\n\n`;
-  fresh.forEach(a=>{body+=`- ${a.type.toUpperCase()} | level=${a.level.toFixed(2)} | offset=${a.offsetAtr.toFixed(2)} ATR | exists_prob=${a.exists.toFixed(3)} | strength=${a.strength.toFixed(3)} | score=${a.score.toFixed(3)}${a.roleReversal?" | ROLE_REVERSAL":""}\n`;});
+  fresh.forEach(a=>{body+=`- ${a.type.toUpperCase()} | level=${a.level.toFixed(2)} | offset=${a.offsetAtr.toFixed(2)} ATR | exists_prob=${a.exists.toFixed(3)} | strength=${a.strength.toFixed(3)} | score=${a.score.toFixed(3)}\n`;});
   body+="\nThis is an automated alert and not trading advice.";
   toast(subject,body,types.includes("resistance")?"res":"");
   fresh.forEach(a=>am.mark(a.type,a.level,atr));
@@ -871,14 +843,13 @@ function render(ts){
     let alpha=pass?0.9:(CFG.ghost?0.24+lv.score*0.2:0);
     if(hov)alpha=1;
     if(alpha<=0)continue;
-    let col=lv.type==="support"?"#2fd6a4":"#ff5d6c";
-    if(lv.roleReversal)col="#ffd166";
+    const col=lv.type==="support"?"#2fd6a4":"#ff5d6c";
     ctx.save();
     if(hov){ctx.shadowColor=col;ctx.shadowBlur=9;}
     ctx.globalAlpha=alpha*p;ctx.strokeStyle=col;ctx.lineWidth=hov?2:(pass?1.4:1);
     ctx.setLineDash(pass?[]:[6,5]);
     ctx.beginPath();ctx.moveTo(M.l,y);ctx.lineTo(M.l+pw*p,y);ctx.stroke();ctx.setLineDash([]);
-    const txt=(lv.roleReversal?"↺ ":(lv.type==="support"?"S ":"R "))+fmtP(lv.level);
+    const txt=(lv.type==="support"?"S ":"R ")+fmtP(lv.level);
     const cw=M.r-12,cx=M.l+pw+4,cy=clamp(y-8,M.t,M.t+priceH-16);
     ctx.globalAlpha=p;ctx.fillStyle=pass?col:"#0a101f";ctx.strokeStyle=col;ctx.lineWidth=1;
     ctx.beginPath();ctx.rect(cx,cy,cw,16);pass?ctx.fill():ctx.stroke();
@@ -1024,7 +995,6 @@ function renderLevels(){
     const sign=lv.offsetAtr>=0?"+":"-";
     const meta=`${sign}${Math.abs(lv.offsetAtr).toFixed(2)} ATR · 리젝션 ${lv.touches} · ${lv.recency}봉 전`;
     const bdg=[];
-    if(lv.roleReversal)bdg.push('<span class="bdg bdg-r">역전환</span>');
     if(lv.significance>=1.5)bdg.push(`<span class="bdg bdg-s">유의×${lv.significance.toFixed(1)}</span>`);
     if(lv.htfAlign)bdg.push('<span class="bdg bdg-h">HTF</span>');
     if(lv.polarity)bdg.push('<span class="bdg bdg-p">극성</span>');
@@ -1038,7 +1008,7 @@ function renderLevels(){
       <div class="lv-type">${lv.type==="support"?"SUP":"RES"}</div>
       <div><div class="lv-price">${fmtP(lv.level)}</div><div class="lv-sub">${meta}</div>${detail}</div>
       <div>${meter("E",lv.exists)}${meter("S",lv.strength)}${meter("SC",lv.score)}${spark}</div>
-      <div class="lv-status"><span>${status}</span><span class="srcchip">HEUR v4</span></div>
+      <div class="lv-status"><span>${status}</span><span class="srcchip">HEUR v5</span></div>
     </div>`;
   }).join("");
   wrap.querySelectorAll(".lv").forEach(el=>{
@@ -1095,6 +1065,7 @@ bind("#thE","#oE","existsThreshold",v=>v.toFixed(2));
 bind("#thS","#oS","strengthThreshold",v=>v.toFixed(2));
 bind("#thC","#oC","scoreThreshold",v=>v.toFixed(2));
 bind("#thCd","#oCd","cooldownMinutes",v=>v+"분");
+bind("#thBz","#oBz","brokenSuppressBars",v=>v+"봉");
 $("#thH").addEventListener("input",e=>{
   const v=+e.target.value;
   document.documentElement.style.setProperty("--chart-h",v+"vh");
@@ -1120,9 +1091,9 @@ $("#autoDel").addEventListener("change",e=>CFG.autoDelete=e.target.checked);
     lastCompletedT=rows.filter(r=>r.ct<=nowS()).slice(-1)[0]?.t||0;
     refreshLevels();updateStats();renderLevels();
     $("#loading").classList.add("hidden");setStatus("LIVE","");
-    log(`Candles loaded: ${rows.length} · Engine v4 ready (통계기준선+HTF+이퀄+역전환)`);
+    log(`Candles loaded: ${rows.length} · Engine v5 ready (역전환 제거·돌파구역 억제)`);
     toast(`[${CFG.symbol} ${CFG.interval}] Direct S/R Alert Started`,
-      `Bitcoin Direct S/R Alert has started.\n\nSymbol: ${CFG.symbol}\nInterval: ${CFG.interval}\nEngine: Heuristic v4\nExists threshold: ${CFG.existsThreshold.toFixed(2)}\nStrength threshold: ${CFG.strengthThreshold.toFixed(2)}\nScore threshold: ${CFG.scoreThreshold.toFixed(2)}\nCooldown: ${CFG.cooldownMinutes} min\nAuto-delete + role-reversal watch: ON\n\nYou will receive an alert when a S/R level is detected.`,"info");
+      `Bitcoin Direct S/R Alert has started.\n\nSymbol: ${CFG.symbol}\nInterval: ${CFG.interval}\nEngine: Heuristic v5\nExists threshold: ${CFG.existsThreshold.toFixed(2)}\nStrength threshold: ${CFG.strengthThreshold.toFixed(2)}\nScore threshold: ${CFG.scoreThreshold.toFixed(2)}\nCooldown: ${CFG.cooldownMinutes} min\nBroken-zone suppression: ${CFG.brokenSuppressBars} bars\nAuto-delete: ON\n\nYou will receive an alert when a S/R level is detected.`,"info");
     setInterval(()=>{if(!document.hidden)poll();},4000);
     setInterval(syncTime,300000);
   }catch(e){
