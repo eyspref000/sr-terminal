@@ -113,6 +113,29 @@ main{flex:1;display:grid;grid-template-columns:1fr 370px;gap:13px;padding:13px;a
 .fsbtn{background:none;border:1px solid var(--line2);color:var(--mut);border-radius:3px;width:28px;height:28px;font-size:14px;cursor:pointer;line-height:1}
 .fsbtn:hover{color:var(--txt);border-color:var(--cyn)}
 
+/* 전체화면 종료 버튼 (전체화면일 때만 표시) */
+.exit-fs{display:none;position:absolute;top:calc(10px + env(safe-area-inset-top));right:12px;z-index:90;
+  font-family:var(--mono);font-size:11px;letter-spacing:.05em;color:var(--txt);
+  background:rgba(10,16,31,.94);border:1px solid var(--line2);border-radius:4px;
+  padding:10px 14px;cursor:pointer;align-items:center;gap:7px;
+  transition:border-color .15s,background .15s}
+.exit-fs:hover,.exit-fs:active{border-color:var(--red);background:rgba(255,93,108,.12)}
+.exit-fs .x{color:var(--red);font-weight:600}
+#chartwrap.fullscreen .exit-fs{display:flex}
+
+/* 스크롤 그립 바 (모바일/태블릿 전용) */
+.scroll-grip{display:none;align-items:center;justify-content:center;gap:12px;
+  padding:14px 0;border-top:1px solid var(--line);cursor:grab;touch-action:none;
+  user-select:none;-webkit-user-select:none;transition:background .15s}
+.scroll-grip.active{cursor:grabbing;background:rgba(73,193,255,.06)}
+.grip-pill{width:52px;height:5px;border-radius:3px;background:var(--line2);position:relative;flex-shrink:0}
+.grip-pill::before,.grip-pill::after{content:"";position:absolute;top:50%;width:5px;height:5px;border-radius:50%;background:var(--dim);transform:translateY(-50%)}
+.grip-pill::before{left:-12px}
+.grip-pill::after{right:-12px}
+.grip-txt{font-family:var(--mono);font-size:9px;letter-spacing:.18em;color:var(--dim)}
+.scroll-grip.active .grip-txt{color:var(--cyn)}
+#chartwrap.fullscreen ~ .scroll-grip{display:none}
+
 /* ===== side panels ===== */
 aside{display:flex;flex-direction:column;gap:13px}
 #levels{max-height:380px;overflow-y:auto;padding:7px}
@@ -170,7 +193,7 @@ footer{padding:9px 16px;padding-bottom:calc(9px + env(safe-area-inset-bottom));b
   font-family:var(--mono);font-size:9px;color:var(--dim);letter-spacing:.05em}
 
 /* ===== toasts ===== */
-#toasts{position:fixed;top:66px;right:14px;z-index:90;display:flex;flex-direction:column;gap:9px;width:330px;max-width:calc(100vw - 28px)}
+#toasts{position:fixed;top:66px;right:14px;z-index:95;display:flex;flex-direction:column;gap:9px;width:330px;max-width:calc(100vw - 28px)}
 .toast{background:#0d1526;border:1px solid var(--line2);border-left:3px solid var(--grn);border-radius:4px;padding:11px 13px;
   box-shadow:0 10px 30px rgba(0,0,0,.5);animation:tin .3s cubic-bezier(.2,.9,.3,1.15)}
 .toast.res{border-left-color:var(--red)}.toast.info{border-left-color:var(--cyn)}
@@ -192,6 +215,7 @@ footer{padding:9px 16px;padding-bottom:calc(9px + env(safe-area-inset-bottom));b
   .brand h1{font-size:13px;letter-spacing:.09em}
   #clock{font-size:9.5px}
   aside{gap:9px}
+  .scroll-grip{display:flex}
 }
 @media(max-width:640px){
   :root{--chart-h:46vh}
@@ -204,6 +228,8 @@ footer{padding:9px 16px;padding-bottom:calc(9px + env(safe-area-inset-bottom));b
   .phead{padding:8px 10px}
   .ctrl-row label{font-size:10px}
   input[type=range]::-webkit-slider-thumb{width:20px;height:20px}
+  .scroll-grip{padding:16px 0}
+  .exit-fs{padding:12px 16px;font-size:12px}
 }
 </style>
 </head>
@@ -260,6 +286,11 @@ footer{padding:9px 16px;padding-bottom:calc(9px + env(safe-area-inset-bottom));b
           <button id="resetView" title="초기화">↺</button>
         </div>
         <button id="followBtn" class="hidden">● LIVE</button>
+        <button class="exit-fs" id="exitFsBtn"><span class="x">✕</span> 전체화면 종료</button>
+      </div>
+      <div class="scroll-grip" id="scrollGrip">
+        <span class="grip-pill"></span>
+        <span class="grip-txt">위아래로 드래그하여 화면 이동</span>
       </div>
     </section>
 
@@ -316,8 +347,8 @@ const clip=clamp;
 let rows=[];
 let curLevels=[];
 const bornMap=new Map();
-const scoreHist=new Map();   // key -> [scores] (trend + sparkline)
-const levelLife=new Map();   // key -> {lowCount}
+const scoreHist=new Map();
+const levelLife=new Map();
 let lastCompletedT=0,prevPx=null,failCount=0;
 let hoverKey=null;
 
@@ -442,7 +473,6 @@ function candidatePrices(start,end){
   if(vp)vpPeaks(vp,0.5).forEach(pk=>ps.push(pk.p));
   return ps;
 }
-/* mean-shift clustering (order-independent) */
 function clusterCandidates(cands,tol){
   const clusters=[];
   for(const c of cands){
@@ -519,7 +549,6 @@ function scoreLevel(cl,close,atr,n,trend,candSets){
   const volAtRej=rejections?volRejSum/rejections:0;
   const heldRatio=heldTot>0?heldW/heldTot:0;
   const polarity=(ownRej>=1&&crossRej>=1&&(ownRej+crossRej)>=3)?1:0;
-  /* exhaustion: pressure + weakening */
   const pressure=clamp((recentTests-3)/4,0,1);
   let weaken=0;
   if(reactions.length>=3){
@@ -531,7 +560,6 @@ function scoreLevel(cl,close,atr,n,trend,candSets){
     if(eA>0.2){if(lA<0.6*eA)weaken=1;else if(lA<0.85*eA)weaken=0.5;}
   }
   const exhaustion=clamp(0.55*pressure+0.45*weaken,0,1);
-  /* cleanliness / volume density / confluence */
   let clean=1;
   if(cl.items.length>1){let sd=0;cl.items.forEach(it=>sd+=(it.p-L)**2);sd=Math.sqrt(sd/cl.items.length);clean=1-Math.min(1,sd/(0.5*atr));}
   let volDens=0;
@@ -542,7 +570,6 @@ function scoreLevel(cl,close,atr,n,trend,candSets){
   const maxI=cl.items.reduce((m,it)=>Math.max(m,it.i??0),start-1);
   const recency=n-1-(rejections?lastRejI:maxI);
   const freshness=Math.exp(-recency/60);
-  /* calibrated probabilities */
   const exists=sigmoid(-1.30+1.20*Math.tanh(rwRej/2.0)+0.90*volDens+0.50*(multiWin/2)+0.40*((confluence-1)/2)+0.30*freshness);
   const strength=sigmoid(-1.70+1.20*Math.tanh(reaction/1.3)+1.30*(heldRatio-0.5)+0.60*polarity+0.50*clean
     +0.45*trendAlign+0.40*Math.tanh(rejections/4)+0.35*Math.tanh(volAtRej/1.5)-0.65*exhaustion);
@@ -603,7 +630,6 @@ function autoDeleteFilter(fresh){
     else{levelLife.set(lv.key,life);kept.push(lv);}
   }
   const keptKeys=new Set(kept.map(l=>l.key));
-  /* disappeared from detection → purge */
   for(const prev of curLevels){
     if(!keptKeys.has(prev.key)&&!removed.includes(prev.key))purgeLevel(prev.key,"미감지",prev);
   }
@@ -657,7 +683,7 @@ function dispatchAlerts(){
   body+=`Symbol: ${CFG.symbol}\nInterval: ${CFG.interval}\n`;
   body+=`Last completed candle: ${utcFull(lastCompletedT)}\n`;
   body+=`Close: ${close.toFixed(2)}\nATR: ${atr.toFixed(2)}\n\nDetected levels:\n\n`;
-  fresh.forEach(a=>{body+=`- ${a.type.toUpperCase()} | level=${a.level.toFixed(2)} | offset=${a.offsetAtr.toFixed(2)} ATR | exists_prob=${a.exists.toFixed(3)} | strength=${a.strength.toFixed(3)} | score=${a.score.toFixed(3)}\n`;});
+  fresh.forEach(a=>{body+=`- ${a.type.toUpperCase()} | level=${a.level.toFixed(2)} | offset=${a.offset_atr!==undefined?a.offset_atr:a.offsetAtr} ATR | exists_prob=${a.exists.toFixed(3)} | strength=${a.strength.toFixed(3)} | score=${a.score.toFixed(3)}\n`;});
   body+="\nThis is an automated alert and not trading advice.";
   toast(subject,body,types.includes("resistance")?"res":"");
   fresh.forEach(a=>am.mark(a.type,a.level,atr));
@@ -708,7 +734,6 @@ function render(ts){
   CH.yC.min+=(tMin-CH.yC.min)*0.16;CH.yC.max+=(tMax-CH.yC.max)*0.16;
   const yOf=p=>M.t+priceH*(1-(p-CH.yC.min)/(CH.yC.max-CH.yC.min));
 
-  /* grid */
   ctx.font='500 10px "IBM Plex Mono",monospace';
   const step=niceStep((CH.yC.max-CH.yC.min)/6);
   const dec=Math.max(0,-Math.floor(Math.log10(step)));
@@ -732,7 +757,6 @@ function render(ts){
   ctx.font='700 40px "Space Grotesk",sans-serif';ctx.fillStyle="rgba(140,170,230,.04)";
   ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText("DIRECT S/R",M.l+pw/2,M.t+priceH/2);
 
-  /* volume bars */
   let vmax=0;for(let i=i0;i<=i1;i++)vmax=Math.max(vmax,rows[i].v);
   for(let i=i0;i<=i1;i++){
     const r=rows[i],x=xOf(i),bw=Math.max(1,barW*0.66);
@@ -740,7 +764,6 @@ function render(ts){
     ctx.fillStyle=r.c>=r.o?"rgba(47,214,164,.25)":"rgba(255,93,108,.25)";
     ctx.fillRect(x-bw/2,M.t+priceH+10+volH-vh,bw,vh);
   }
-  /* candles */
   for(let i=i0;i<=i1;i++){
     const r=rows[i],x=xOf(i),bw=Math.max(1,barW*0.66);
     const col=r.c>=r.o?"#2fd6a4":"#ff5d6c";
@@ -750,7 +773,6 @@ function render(ts){
     ctx.fillStyle=col;ctx.fillRect(x-bw/2,y1,bw,Math.max(1,y2-y1));
   }
 
-  /* volume profile overlay */
   if(CFG.vp&&CH.vp){
     const vp=CH.vp,bwMax=pw*0.17;
     for(let b=0;b<vp.bins;b++){
@@ -763,7 +785,6 @@ function render(ts){
     }
   }
 
-  /* S/R level lines */
   const now=performance.now();
   for(const lv of curLevels){
     const y=yOf(lv.level);lv._sy=y;
@@ -789,7 +810,6 @@ function render(ts){
     ctx.restore();
   }
 
-  /* live price */
   const last=rows[n-1],ly=yOf(last.c);
   if(ly>M.t&&ly<M.t+priceH){
     ctx.save();ctx.globalAlpha=.85;ctx.strokeStyle="#49c1ff";ctx.setLineDash([2,4]);ctx.lineWidth=1;
@@ -807,7 +827,6 @@ function render(ts){
     ctx.restore();
   }
 
-  /* crosshair */
   if(CH.mouse&&!CH.drag&&pointers.size===0){
     const[mx,my]=CH.mouse;
     if(mx>M.l&&mx<M.l+pw&&my>M.t&&my<M.t+ph){
@@ -897,11 +916,34 @@ $("#followBtn").onclick=()=>{CH.follow=true;syncFollowBtn();};
 $("#zoomIn").onclick=()=>{CH.view.count=clip(CH.view.count*0.75,20,420);};
 $("#zoomOut").onclick=()=>{CH.view.count=clip(CH.view.count*1.35,20,420);};
 $("#resetView").onclick=()=>{CH.view.count=140;CH.follow=true;syncFollowBtn();};
+
+/* 전체화면 진입/종료 */
+function enterFs(){$("#chartwrap").classList.add("fullscreen");$("#fsBtn").textContent="⛶";setTimeout(resize,60);}
+function exitFs(){$("#chartwrap").classList.remove("fullscreen");$("#fsBtn").textContent="⛶";setTimeout(resize,60);}
 $("#fsBtn").onclick=()=>{
-  const w=$("#chartwrap");w.classList.toggle("fullscreen");
-  $("#fsBtn").textContent=w.classList.contains("fullscreen")?"✕":"⛶";
-  setTimeout(resize,60);
+  const w=$("#chartwrap");
+  if(w.classList.contains("fullscreen"))exitFs();else enterFs();
 };
+$("#exitFsBtn").onclick=exitFs;
+
+/* 스크롤 그립 바 (모바일 페이지 스크롤용) */
+(function(){
+  const grip=$("#scrollGrip");
+  let gd=null;
+  grip.addEventListener("pointerdown",e=>{
+    grip.setPointerCapture(e.pointerId);
+    gd={y:e.clientY,scroll:window.scrollY};
+    grip.classList.add("active");
+  });
+  grip.addEventListener("pointermove",e=>{
+    if(!gd)return;
+    const dy=e.clientY-gd.y;
+    window.scrollTo(0,gd.scroll-dy);
+  });
+  const gEnd=e=>{gd=null;grip.classList.remove("active");};
+  grip.addEventListener("pointerup",gEnd);
+  grip.addEventListener("pointercancel",gEnd);
+})();
 
 /* ================= Levels panel ================= */
 function sparkSVG(hist){
@@ -1019,7 +1061,7 @@ $("#autoDel").addEventListener("change",e=>CFG.autoDelete=e.target.checked);
     lastCompletedT=rows.filter(r=>r.ct<=nowS()).slice(-1)[0]?.t||0;
     refreshLevels();updateStats();renderLevels();
     $("#loading").classList.add("hidden");setStatus("LIVE","");
-    log(`Candles loaded: ${rows.length} · Engine v3 ready (Rejection+MeanShift+Exhaustion)`);
+    log(`Candles loaded: ${rows.length} · Engine v3 ready`);
     toast(`[${CFG.symbol} ${CFG.interval}] Direct S/R Alert Started`,
       `Bitcoin Direct S/R Alert has started.\n\nSymbol: ${CFG.symbol}\nInterval: ${CFG.interval}\nEngine: Heuristic v3\nExists threshold: ${CFG.existsThreshold.toFixed(2)}\nStrength threshold: ${CFG.strengthThreshold.toFixed(2)}\nScore threshold: ${CFG.scoreThreshold.toFixed(2)}\nCooldown: ${CFG.cooldownMinutes} min\nAuto-delete: full removal ON\n\nYou will receive an alert when a S/R level is detected.`,"info");
     setInterval(()=>{if(!document.hidden)poll();},4000);
